@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: heartbeat-worker
+  namespace: cfi-control-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: heartbeat-worker
+  template:
+    metadata:
+      labels:
+        app: heartbeat-worker
+    spec:
+      serviceAccountName: control-plane
+      containers:
+        - name: heartbeat-worker
+          image: us-central1-docker.pkg.dev/intelligent-machines/cfi/control-plane:latest
+          command: ["python", "heartbeat_worker.py"]
+          env:
+            - name: GCP_PROJECT
+              value: intelligent-machines
+            - name: PUBSUB_HEARTBEAT_SUBSCRIPTION
+              value: cfi-heartbeat-tick-sub
+            - name: CONTROL_PLANE_URL
+              value: http://control-plane.cfi-control-plane.svc.cluster.local:8080
+            - name: FIRESTORE_DATABASE
+              value: customer-feedback-intelligence
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
