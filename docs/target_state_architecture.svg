@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="920" viewBox="0 0 1400 920">
+  <defs>
+    <linearGradient id="hdr" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1F4E79"/>
+      <stop offset="100%" stop-color="#2E75B6"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#5B9BD5"/>
+    </marker>
+  </defs>
+  <rect width="1400" height="920" fill="#F7F9FC"/>
+  <rect x="0" y="0" width="1400" height="56" fill="url(#hdr)"/>
+  <text x="700" y="28" text-anchor="middle" fill="#FFFFFF" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="600">Customer Feedback Intelligence — Target State Architecture</text>
+  <text x="700" y="46" text-anchor="middle" fill="#BDD7EE" font-family="Segoe UI, Arial, sans-serif" font-size="11">Control Plane (GKE) · Vertex AI MLOps · Data Plane Containers · Agentic RAG · JiraTool</text>
+  <text x="700" y="100" text-anchor="middle" font-family="Segoe UI, Arial" font-size="14" fill="#1F4E79">See full diagram PNG in workspace artifacts/target_state_architecture.png</text>
+  <text x="700" y="130" text-anchor="middle" font-family="Segoe UI, Arial" font-size="12" fill="#548235">Vertex MLOps pipeline: Ingest → Normalize → Features → Classify → Index → Analytics</text>
+  <text x="700" y="160" text-anchor="middle" font-family="Segoe UI, Arial" font-size="12" fill="#C65911">Ticket path: Agentic RAG → Cortex/Gemini → JiraTool → Jira (no Kafka)</text>
+  <text x="700" y="190" text-anchor="middle" font-family="Segoe UI, Arial" font-size="12" fill="#666">No Dataflow · CP submits PipelineJob · Firestore state · Modes via parameters</text>
+  <text x="700" y="250" text-anchor="middle" font-family="Segoe UI, Arial" font-size="11" fill="#888">Full vector diagram available at artifacts; this stub ensures docs/ has a diagram reference.</text>
+</svg>
