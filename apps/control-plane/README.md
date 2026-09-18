@@ -1,46 +1,50 @@
-# Control Plane
+# Control Plane (Firestore)
 
-Operational brain of Customer Feedback Intelligence. Owns desired/execution state, scheduling, retries, lineage and config. Does **not** run heavy ML or GCS transforms — Data Plane workers do that and report stage status here.
+Operational brain of Customer Feedback Intelligence.
+
+**Firestore database:** `customer-feedback-intelligence`  
+**GCP project:** `intelligent-machines`  
+**Region:** `us-central1`
+
+## Capabilities (implemented)
+
+| Capability | Implementation |
+|------------|----------------|
+| Metadata & State Store | Firestore collections: `pipeline_runs`, `ticket_candidates`, `lineage`, `idempotency_keys`, `model_versions`, `config`, `dlq`, `heartbeats`, `watermarks` |
+| Heartbeat Monitor | `POST /v1/heartbeat` + watermarks; Cloud Scheduler → `cfi-heartbeat-tick` Pub/Sub; `POST /v1/scheduler/heartbeat-tick` |
+| Ingestion Scheduler | `POST /v1/runs` modes: INITIAL_FULL, HEARTBEAT, ON_DEMAND_FULL, TARGETED_REPLAY |
+| Pipeline Orchestrator | Stage dependency graph, checkpoint fields, Pub/Sub `cfi-stage-dispatch`, auto-complete |
+| Failure / Retry | Exponential backoff, max retries, MANUAL_INTERVENTION, DLQ collection + `cfi-dlq` topic |
+| Observability | JSON structured logs with `correlation_id`, `pipeline_run_id`, `stage` |
+| Config Service | File ConfigMap + Firestore `config` collection (`GET/PUT /v1/config`) |
+| Model governance | `POST/GET /v1/models`, promote to PRODUCTION |
+
+Falls back to in-memory store if Firestore is unreachable (local dev).
 
 ## Run locally
 
 ```bash
-cd apps/control-plane
-pip install -r requirements.txt
+export GCP_PROJECT=intelligent-machines
+export FIRESTORE_DATABASE=customer-feedback-intelligence
 export JIRA_TOOL_URL=http://localhost:8081
+# Optional: gcloud auth application-default login
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8080
 ```
 
-## API surface
+## Terraform
 
-| Method | Path | Purpose |
-|--------|------|--------|
-| GET | `/healthz` | Liveness |
-| POST | `/v1/heartbeat` | Source health / new-data signal |
-| GET | `/v1/heartbeat` | List last-seen by source |
-| POST | `/v1/runs` | Create + start pipeline run |
-| GET | `/v1/runs` | List runs |
-| GET | `/v1/runs/{id}` | Run detail + stages |
-| POST | `/v1/runs/{id}/stages` | Worker stage progress |
-| POST | `/v1/runs/{id}/retry` | Retry after FAILED |
-| POST | `/v1/runs/{id}/resume` | Resume MANUAL_INTERVENTION |
-| POST | `/v1/runs/{id}/reprocess` | Reprocess COMPLETED run |
-| POST | `/v1/runs/{id}/ticket-candidates` | Register ticket candidate |
-| POST | `/v1/jira/dispatch` | Call JiraTool |
-| GET | `/v1/lineage/{artifact_id}` | Parent artifacts |
-| GET | `/v1/config/pipeline` | Pipeline config view |
-
-## State machine
-
-```
-CREATED → VALIDATING → RUNNING → COMPLETED
-RUNNING → FAILED → RETRY_PENDING → RUNNING
-FAILED → MANUAL_INTERVENTION → RESUMED → RUNNING
-COMPLETED → REPROCESS_REQUESTED → RUNNING
+```bash
+cd terraform && terraform apply
+# Creates Firestore DB customer-feedback-intelligence, Pub/Sub topics, Scheduler job
 ```
 
-## Production notes
+## Key APIs
 
-- Replace in-memory `MetadataStore` with Cloud Spanner or Firestore.
-- Heartbeat CronJob can POST `/v1/runs` with `mode=HEARTBEAT` on a schedule.
-- Workload Identity SA: `cfi-control-plane@intelligent-machines.iam.gserviceaccount.com`.
+- `POST /v1/runs` — create & start run (dispatches INGEST)
+- `POST /v1/runs/{id}/stages` — worker progress (enforces deps, DLQ on fail)
+- `POST /v1/runs/{id}/retry` — backoff + reset failed stages
+- `POST /v1/scheduler/heartbeat-tick` — Scheduler entrypoint
+- `GET /v1/dlq` — dead-letter queue
+- `PUT /v1/config/{key}` — versioned config in Firestore
+- `POST /v1/models` / `.../promote` — model registry
