@@ -1,0 +1,33 @@
+pipeline:
+  schema_version: "1.0"
+  pipeline_version: "1.0.0"
+
+  gcs:
+    bucket: customer-feedback
+    prefixes:
+      raw: raw/
+      raw_envelope: raw-envelope/
+      normalized: curated/normalized/
+      features: curated/features/
+      classified: curated/classified/
+      quarantine: quarantine/
+
+  classification:
+    confidence_threshold: 0.75
+    review_queue_enabled: true
+    auto_escalate_after_hours: 24
+
+  models:
+    classifier_endpoint_env: CLASSIFIER_ENDPOINT
+    embedding_model: text-embedding-004
+    anomaly_score_threshold: 0.8
+
+  agentic_rag:
+    vector_search_top_k: 8
+    prompt_version: ticket-intel-v4.2
+    cortex_api_url_env: CORTEX_API_URL
+
+  bigquery:
+    dataset: feedback_intelligence
+    classified_table: feedback_classified
+    outcomes_table: ticket_outcomes
