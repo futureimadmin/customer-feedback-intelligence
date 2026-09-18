@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cfi-data-plane
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: data-plane
+  namespace: cfi-data-plane
+  annotations:
+    iam.gke.io/gcp-service-account: cfi-data-plane@intelligent-machines.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stage-worker
+  namespace: cfi-data-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: stage-worker
+  template:
+    metadata:
+      labels:
+        app: stage-worker
+    spec:
+      serviceAccountName: data-plane
+      containers:
+        - name: stage-worker
+          image: us-central1-docker.pkg.dev/intelligent-machines/cfi/stage-worker:latest
+          env:
+            - name: GCP_PROJECT
+              value: intelligent-machines
+            - name: PUBSUB_STAGE_SUBSCRIPTION
+              value: cfi-stage-dispatch-sub
+            - name: CONTROL_PLANE_URL
+              value: http://control-plane.cfi-control-plane.svc.cluster.local:8080
+            - name: GCS_BUCKET
+              value: customer-feedback
+            - name: STAGE_WORKER_MODE
+              value: pubsub
+            - name: JIRA_TOOL_URL
+              value: http://jira-tool.cfi-jira-tool.svc.cluster.local:8080
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
