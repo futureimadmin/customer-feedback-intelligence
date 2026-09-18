@@ -11,6 +11,24 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: cfi-control-plane@intelligent-machines.iam.gserviceaccount.com
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-config
+  namespace: cfi-control-plane
+data:
+  pipeline.yaml: |
+    pipeline:
+      schema_version: "1.0"
+      pipeline_version: "1.0.0"
+      gcs:
+        bucket: customer-feedback
+      classification:
+        confidence_threshold: 0.75
+      retry:
+        max_retries: 3
+        backoff_base_seconds: 30
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,12 +55,20 @@ spec:
           env:
             - name: PORT
               value: "8080"
+            - name: GCP_PROJECT
+              value: intelligent-machines
+            - name: FIRESTORE_DATABASE
+              value: customer-feedback-intelligence
             - name: JIRA_TOOL_URL
               value: http://jira-tool.cfi-jira-tool.svc.cluster.local:8080
             - name: PIPELINE_CONFIG_PATH
               value: /config/pipeline.yaml
             - name: GCS_BUCKET
               value: customer-feedback
+            - name: PUBSUB_STAGE_TOPIC
+              value: cfi-stage-dispatch
+            - name: PUBSUB_DLQ_TOPIC
+              value: cfi-dlq
           volumeMounts:
             - name: config
               mountPath: /config
