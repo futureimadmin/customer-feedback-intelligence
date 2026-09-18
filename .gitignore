@@ -1,0 +1,28 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/terraform.tfvars
+terraform/crash.log
+
+# Secrets / env
+.env
+.env.local
+**/secrets/
+*.pem
+
+# Node
+ui/node_modules/
+ui/dist/
+
+# Python
+__pycache__/
+.venv/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Local
+*.log
