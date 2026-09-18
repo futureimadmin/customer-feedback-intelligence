@@ -1,0 +1,43 @@
+# Non-secret Jira settings (secrets: jira-base-url, jira-email, jira-api-token in Secret Manager)
+# Override via env or ConfigMap in each environment.
+
+jira:
+  # Secret Manager secret IDs (region/project from runtime)
+  secrets:
+    base_url_secret_id: jira-base-url
+    email_secret_id: jira-email
+    api_token_secret_id: jira-api-token
+
+  # Default project / issue type for auto-created tickets
+  default_project_key: MOB
+  default_issue_type: Bug
+
+  # Field mappings (Jira Cloud custom field IDs — replace with yours)
+  fields:
+    summary: summary
+    description: description
+    priority: priority
+    labels: labels
+    # example custom fields:
+    # business_unit: customfield_10050
+    # severity: customfield_10051
+
+  # Deduplication / search
+  search:
+    # JQL template; {product} and {summary_tokens} filled by JiraTool
+    similar_issues_jql: 'project = {project} AND statusCategory != Done AND text ~ "{summary_tokens}" ORDER BY updated DESC'
+    max_results: 10
+    similarity_threshold: 0.85
+
+  # Behaviour
+  behaviour:
+    prefer_update_if_similar: true
+    add_comment_on_update: true
+    link_source_feedback: true
+    external_id_field: null   # optional: store ticketCandidateId for idempotency
+
+  # Resilience
+  http:
+    timeout_seconds: 30
+    max_retries: 5
+    backoff_base_ms: 500
