@@ -1,0 +1,13 @@
+project_id   = "intelligent-machines"
+region       = "us-central1"
+bucket_name  = "customer-feedback"
+environment  = "dev"
+
+gke_cluster_name = "cfi-cluster"
+bq_dataset_id    = "feedback_intelligence"
+enable_gke       = true
+
+# Jira non-secret defaults (secrets via Secret Manager)
+jira_project_key = "MOB"
+jira_issue_type  = "Bug"
+jira_base_url_placeholder = "https://YOUR_DOMAIN.atlassian.net"
