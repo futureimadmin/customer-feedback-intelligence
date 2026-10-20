@@ -1,8 +1,8 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import JiraSettings from "./pages/JiraSettings";
-import ReviewQueue from "./pages/ReviewQueue";
 import PipelineRuns from "./pages/PipelineRuns";
+import ReviewQueue from "./pages/ReviewQueue";
 
 export default function App() {
   return (
@@ -15,7 +15,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/runs">Pipeline runs</NavLink>
           <NavLink to="/review">Review queue</NavLink>
-          <NavLink to="/settings/jira">Jira settings</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
         <p style={{ marginTop: "2rem", fontSize: "0.7rem", opacity: 0.7 }}>
           GCP: intelligent-machines
@@ -30,7 +30,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/runs" element={<PipelineRuns />} />
           <Route path="/review" element={<ReviewQueue />} />
-          <Route path="/settings/jira" element={<JiraSettings />} />
+          <Route path="/settings" element={<JiraSettings />} />
         </Routes>
       </main>
     </div>

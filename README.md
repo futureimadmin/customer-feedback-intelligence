@@ -13,9 +13,9 @@ AI-powered platform that turns multichannel customer feedback and application lo
 |-------|------|
 | **Control Plane** (GKE) | Scheduling, state, retries, lineage, governance |
 | **Data Plane** (GKE) | Ingestion, normalization, ML features, classification |
-| **Vertex AI** | Embeddings, Vector Search, model serving, Gemini via Cortex API |
+| **Vertex AI** | Embeddings, Vector Search, model serving, Gemini via Vertex AI (ADC) |
 | **BigQuery** | Analytics branch (independent of Jira) |
-| **Agentic RAG** | Grounded context → Gemini → **JiraTool** → Jira |
+| **Agentic RAG** | Grounded context → Gemini (ADC) → **JiraTool** → Jira |
 
 Kafka is **not** used on the Jira creation path. Idempotency is enforced at source fingerprint, pipeline checkpoints, `ticketDeduplicationKey`, Ticket Registry, and JiraTool.
 
