@@ -59,3 +59,29 @@ variable "jira_base_url_placeholder" {
   type        = string
   default     = "https://YOUR_DOMAIN.atlassian.net"
 }
+
+# --- Vertex AI Vector Search ---
+
+variable "enable_vector_search" {
+  description = "Create Vertex AI Matching Engine index + endpoint for Agentic RAG"
+  type        = bool
+  default     = true
+}
+
+variable "vector_index_dimensions" {
+  description = "Embedding dimensions (text-embedding-004 = 768)"
+  type        = number
+  default     = 768
+}
+
+variable "vector_index_approx_neighbors" {
+  description = "Approximate neighbors for the tree-AH index"
+  type        = number
+  default     = 150
+}
+
+variable "vector_shard_size" {
+  description = "Vertex Matching Engine shard size"
+  type        = string
+  default     = "SHARD_SIZE_SMALL"
+}

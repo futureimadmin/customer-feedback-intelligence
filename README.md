@@ -88,6 +88,15 @@ gs://customer-feedback/
   quarantine/
 ```
 
+## Phase 2 additions
+
+- Vertex Vector Search Terraform (`terraform/vertex_vector_search.tf`)
+- Training helpers + model registry UI (`apps/data-plane/training.py`, Models page)
+- Control Plane SLA / metrics / data-quality endpoints
+- Settings load-from-API; Dashboard & Pipeline runs live metrics
+
+See [docs/PHASE2.md](docs/PHASE2.md).
+
 ## License
 
 Proprietary — Intelligent Machines.
