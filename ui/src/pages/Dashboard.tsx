@@ -1,13 +1,46 @@
+import { useEffect, useState } from "react";
+
+const apiBase = () =>
+  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8080";
+
 export default function Dashboard() {
-  // Demo metrics — wire to Control Plane / BigQuery APIs in production
-  const metrics = [
-    { label: "Ingested (24h)", value: "1,284" },
-    { label: "Classified", value: "1,102" },
-    { label: "Tickets created", value: "47" },
-    { label: "Duplicates prevented", value: "312" },
-    { label: "In review", value: "18" },
-    { label: "Anomalies", value: "6" },
-  ];
+  const [metrics, setMetrics] = useState([
+    { label: "Ingested (sample)", value: "—" },
+    { label: "Runs completed", value: "—" },
+    { label: "Tickets created", value: "—" },
+    { label: "Success rate", value: "—" },
+    { label: "DLQ open", value: "—" },
+    { label: "SLA", value: "—" },
+  ]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [sum, sla] = await Promise.all([
+          fetch(`${apiBase()}/v1/metrics/summary`).then((r) => (r.ok ? r.json() : null)),
+          fetch(`${apiBase()}/v1/sla`).then((r) => (r.ok ? r.json() : null)),
+        ]);
+        if (!sum) return;
+        setMetrics([
+          { label: "Ingested (sample)", value: String(sum.ingested ?? "—") },
+          { label: "Runs completed", value: String(sum.completed ?? "—") },
+          { label: "Tickets created", value: String(sum.tickets_created ?? "—") },
+          {
+            label: "Success rate",
+            value:
+              sum.success_rate != null ? `${Math.round(sum.success_rate * 100)}%` : "—",
+          },
+          { label: "DLQ open", value: String(sum.dlq_open ?? "—") },
+          {
+            label: "SLA",
+            value: sla?.healthy === false ? "BREACH" : sla?.healthy ? "OK" : "—",
+          },
+        ]);
+      } catch {
+        /* keep placeholders */
+      }
+    })();
+  }, []);
 
   return (
     <>
@@ -26,9 +59,8 @@ export default function Dashboard() {
       <div className="card">
         <h3>Pipeline path</h3>
         <p style={{ margin: "0.5rem 0 0", fontSize: "0.9rem", color: "#475569" }}>
-          Source → GCS raw/ → normalize → features + embeddings → classify (3
-          models) → BigQuery analytics branch · Agentic RAG → Gemini (ADC) →
-          JiraTool → Jira
+          Source → GCS raw/ → normalize → features + embeddings → classify (3 models) →
+          BigQuery analytics branch · Agentic RAG → Gemini (ADC) → JiraTool → Jira
         </p>
       </div>
     </>

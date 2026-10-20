@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import JiraSettings from "./pages/JiraSettings";
+import Models from "./pages/Models";
 import PipelineRuns from "./pages/PipelineRuns";
 import ReviewQueue from "./pages/ReviewQueue";
 
@@ -15,6 +16,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/runs">Pipeline runs</NavLink>
           <NavLink to="/review">Review queue</NavLink>
+          <NavLink to="/models">Models</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <p style={{ marginTop: "2rem", fontSize: "0.7rem", opacity: 0.7 }}>
@@ -30,6 +32,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/runs" element={<PipelineRuns />} />
           <Route path="/review" element={<ReviewQueue />} />
+          <Route path="/models" element={<Models />} />
           <Route path="/settings" element={<JiraSettings />} />
         </Routes>
       </main>

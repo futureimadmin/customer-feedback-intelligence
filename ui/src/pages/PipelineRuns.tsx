@@ -1,35 +1,52 @@
-const RUNS = [
+import { useEffect, useState } from "react";
+
+type RunRow = {
+  pipeline_run_id: string;
+  mode?: string;
+  status?: string;
+  metrics?: Record<string, number>;
+};
+
+const apiBase = () =>
+  (import.meta as any).env?.VITE_API_BASE_URL || "http://localhost:8080";
+
+const FALLBACK = [
   {
-    id: "run-20260918-001",
-    mode: "Heartbeat",
+    pipeline_run_id: "run-demo-001",
+    mode: "HEARTBEAT",
     status: "COMPLETED",
-    ingested: 128,
-    classified: 120,
-    tickets: 9,
-  },
-  {
-    id: "run-20260918-000",
-    mode: "Initial Full",
-    status: "COMPLETED",
-    ingested: 5400,
-    classified: 5210,
-    tickets: 210,
-  },
-  {
-    id: "run-20260917-014",
-    mode: "Heartbeat",
-    status: "FAILED",
-    ingested: 40,
-    classified: 12,
-    tickets: 0,
+    metrics: { ingested: 128, classified: 120, tickets: 9 },
   },
 ];
 
 export default function PipelineRuns() {
+  const [runs, setRuns] = useState<RunRow[]>(FALLBACK);
+  const [fromApi, setFromApi] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${apiBase()}/v1/runs?limit=50`);
+        if (!r.ok) return;
+        const data = await r.json();
+        const list = Array.isArray(data) ? data : data.runs || [];
+        if (list.length) {
+          setRuns(list);
+          setFromApi(true);
+        }
+      } catch {
+        /* keep fallback */
+      }
+    })();
+  }, []);
+
   return (
     <>
       <h2 className="page-title">Pipeline runs</h2>
-      <p className="page-sub">Control Plane ingestion and processing history</p>
+      <p className="page-sub">
+        Control Plane ingestion and processing history
+        {fromApi ? " (live)" : " (demo data — start Control Plane for live runs)"}
+      </p>
       <table>
         <thead>
           <tr>
@@ -42,26 +59,28 @@ export default function PipelineRuns() {
           </tr>
         </thead>
         <tbody>
-          {RUNS.map((r) => (
-            <tr key={r.id}>
+          {runs.map((r) => (
+            <tr key={r.pipeline_run_id}>
               <td>
-                <code>{r.id}</code>
+                <code>{r.pipeline_run_id}</code>
               </td>
-              <td>{r.mode}</td>
+              <td>{r.mode || "—"}</td>
               <td>
                 <span
                   className={
                     r.status === "COMPLETED"
                       ? "badge badge-ok"
-                      : "badge badge-warn"
+                      : r.status === "FAILED"
+                        ? "badge badge-warn"
+                        : "badge badge-info"
                   }
                 >
-                  {r.status}
+                  {r.status || "—"}
                 </span>
               </td>
-              <td>{r.ingested}</td>
-              <td>{r.classified}</td>
-              <td>{r.tickets}</td>
+              <td>{r.metrics?.ingested ?? "—"}</td>
+              <td>{r.metrics?.classified ?? "—"}</td>
+              <td>{r.metrics?.tickets ?? r.metrics?.ticket_candidates ?? "—"}</td>
             </tr>
           ))}
         </tbody>
