@@ -2,16 +2,19 @@
 Stage 8 — Agentic RAG & ticket intelligence.
 
 Builds grounded context from classified record + feature/cluster/anomaly,
-optionally calls Cortex/Gemini (CORTEX_API_URL), then dispatches to Control
-Plane → JiraTool.
+calls Gemini via Vertex AI using Application Default Credentials (ADC),
+then dispatches to Control Plane → JiraTool.
 
-Without Cortex, produces a deterministic Ticket Candidate from templates.
+No Cortex API. Falls back to a deterministic template Ticket Candidate when
+Gemini is unavailable (local/dev without ADC or Vertex access).
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -25,24 +28,73 @@ def dedup_key(classified: dict[str, Any]) -> str:
     product = (classified.get("product") or "unknown").lower()
     category = (classified.get("category") or "other").lower()
     cluster = (classified.get("cluster") or {}).get("clusterId") or ""
-    # Time-bucket by month for deterministic key
     month = (classified.get("classifiedAt") or utcnow())[:7]
     raw = f"{product}|{category}|{cluster}|{month}"
     return f"dk-{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
+def retrieve_similar_issues(text: str, top_k: int = 8) -> list[dict[str, Any]]:
+    """Query Vertex AI Vector Search when INDEX_ENDPOINT / DEPLOYED_INDEX_ID are set."""
+    endpoint_name = os.environ.get("VECTOR_INDEX_ENDPOINT")
+    deployed_id = os.environ.get("VECTOR_DEPLOYED_INDEX_ID")
+    if not endpoint_name or not deployed_id:
+        return []
+
+    project = os.environ.get("GCP_PROJECT", "intelligent-machines")
+    location = os.environ.get("GCP_REGION", "us-central1")
+    embedding_model = (
+        os.environ.get("EMBEDDING_MODEL")
+        or load_pipeline_config().get("models", {}).get("embedding_model", "text-embedding-004")
+    )
+
+    try:
+        import vertexai
+        from vertexai.language_models import TextEmbeddingModel
+        from google.cloud import aiplatform
+
+        vertexai.init(project=project, location=location)
+        model = TextEmbeddingModel.from_pretrained(embedding_model)
+        emb = model.get_embeddings([text or ""])[0].values
+
+        aiplatform.init(project=project, location=location)
+        index_endpoint = aiplatform.MatchingEngineIndexEndpoint(index_endpoint_name=endpoint_name)
+        response = index_endpoint.find_neighbors(
+            deployed_index_id=deployed_id,
+            queries=[list(emb)],
+            num_neighbors=top_k,
+        )
+        similar: list[dict[str, Any]] = []
+        for neighbors in response or []:
+            for n in neighbors:
+                similar.append(
+                    {
+                        "id": getattr(n, "id", None),
+                        "distance": getattr(n, "distance", None),
+                        "metadata": getattr(n, "restricts", None) or {},
+                    }
+                )
+        logger.info("Vector Search returned %d neighbors", len(similar))
+        return similar
+    except Exception as e:
+        logger.warning("Vector Search unavailable: %s", e)
+        return []
+
+
 def build_grounded_context(classified: dict[str, Any]) -> dict[str, Any]:
     cfg = load_pipeline_config()
+    top_k = int(cfg.get("agentic_rag", {}).get("vector_search_top_k", 8))
+    text = classified.get("cleanedText") or ""
+    similar = retrieve_similar_issues(text, top_k=top_k)
     return {
         "classified": {
             "businessUnit": classified.get("businessUnit"),
             "category": classified.get("category"),
             "confidence": classified.get("confidence"),
         },
-        "text": classified.get("cleanedText"),
+        "text": text,
         "anomaly": classified.get("anomaly"),
         "cluster": classified.get("cluster"),
-        "similarIssues": [],  # filled by Vector Search in production
+        "similarIssues": similar,
         "openTickets": [],
         "policy": "Prefer update existing ticket when similarity > 0.85 and same product",
         "promptVersion": cfg.get("agentic_rag", {}).get("prompt_version", "ticket-intel-v4.2"),
@@ -70,12 +122,11 @@ def template_ticket_candidate(classified: dict[str, Any], context: dict[str, Any
     ]
     if anomaly.get("isAnomaly"):
         description_parts.append(
-            f"Anomaly: {anomaly.get('anomalyType')} (score={anomaly.get('anomalyScore')}) — {anomaly.get('supportingEvidence')}"
+            f"Anomaly: {anomaly.get('anomalyType')} (score={anomaly.get('anomalyScore')}) — "
+            f"{anomaly.get('supportingEvidence') or ''}"
         )
-    if classified.get("cluster"):
-        description_parts.append(f"Cluster: {classified['cluster'].get('clusterId')}")
 
-    labels = [cat.lower().replace(" ", "-"), "auto-generated"]
+    labels = [str(cat).lower().replace(" ", "-")]
     if product:
         labels.append(str(product).lower().replace(" ", "-"))
     if anomaly.get("isAnomaly"):
@@ -101,20 +152,96 @@ def template_ticket_candidate(classified: dict[str, Any], context: dict[str, Any
     }
 
 
-def call_cortex(context: dict[str, Any], classified: dict[str, Any]) -> dict[str, Any] | None:
-    url = os.environ.get("CORTEX_API_URL")
-    if not url:
-        return None
+def _extract_json(text: str) -> dict[str, Any] | None:
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
     try:
-        with httpx.Client(timeout=60.0) as client:
-            r = client.post(
-                url.rstrip("/") + "/v1/ticket-intelligence",
-                json={"context": context, "classified": classified},
-            )
-            r.raise_for_status()
-            return r.json()
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def call_gemini(context: dict[str, Any], classified: dict[str, Any]) -> dict[str, Any] | None:
+    """Invoke Gemini via Vertex AI using Application Default Credentials."""
+    project = os.environ.get("GCP_PROJECT", "intelligent-machines")
+    location = os.environ.get("GCP_REGION", "us-central1")
+    model_name = os.environ.get(
+        "GEMINI_MODEL",
+        load_pipeline_config().get("agentic_rag", {}).get("gemini_model", "gemini-2.0-flash-001"),
+    )
+
+    prompt = f"""You are an enterprise ticket-intelligence agent. Given classified customer feedback
+and grounded context, produce a single JSON object for a Jira ticket candidate.
+
+Rules:
+- Prefer updating an existing ticket when similarity policy allows.
+- Output ONLY valid JSON. No markdown commentary outside a JSON object.
+- Required keys: summary, description, issueType, priority, severity, businessUnit, labels (array),
+  deduplicationKey, suggestedExistingKey (string or null), confidence (0-1), modelVersion, promptVersion.
+
+Context:
+{json.dumps(context, indent=2)}
+
+Classified record:
+{json.dumps(classified, indent=2)}
+"""
+
+    try:
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, GenerationConfig
+
+        vertexai.init(project=project, location=location)
+        model = GenerativeModel(model_name)
+        response = model.generate_content(
+            prompt,
+            generation_config=GenerationConfig(
+                temperature=0.2,
+                max_output_tokens=2048,
+                response_mime_type="application/json",
+            ),
+        )
+        raw = response.text if hasattr(response, "text") else str(response)
+        parsed = _extract_json(raw)
+        if not parsed:
+            logger.warning("Gemini returned non-JSON; falling back to template")
+            return None
+
+        if "ticketCandidateId" not in parsed:
+            parsed["ticketCandidateId"] = f"tc-{short_id()}"
+        if "deduplicationKey" not in parsed:
+            parsed["deduplicationKey"] = dedup_key(classified)
+        if "createdAt" not in parsed:
+            parsed["createdAt"] = utcnow()
+        if "modelVersion" not in parsed:
+            parsed["modelVersion"] = model_name
+        if "promptVersion" not in parsed:
+            parsed["promptVersion"] = context.get("promptVersion")
+        if "action" not in parsed:
+            parsed["action"] = "create_or_update"
+        if "labels" not in parsed or not isinstance(parsed["labels"], list):
+            parsed["labels"] = []
+        if "evidenceRefs" not in parsed:
+            parsed["evidenceRefs"] = [
+                classified.get("classifiedId"),
+                classified.get("parentFeatureId"),
+            ]
+
+        logger.info("Gemini ticket candidate produced via ADC (model=%s)", model_name)
+        return parsed
     except Exception as e:
-        logger.warning("Cortex call failed: %s", e)
+        logger.warning("Gemini (Vertex ADC) call failed: %s", e)
         return None
 
 
@@ -131,9 +258,8 @@ def run_agentic_rag(pipeline_run_id: str, classified: dict[str, Any]) -> dict[st
     report_stage(pipeline_run_id, "AGENTIC_RAG", "RUNNING")
     try:
         context = build_grounded_context(classified)
-        candidate = call_cortex(context, classified) or template_ticket_candidate(classified, context)
+        candidate = call_gemini(context, classified) or template_ticket_candidate(classified, context)
 
-        # Register + dispatch via Control Plane
         cp = control_plane_url()
         with httpx.Client(timeout=30.0) as client:
             tc_resp = client.post(
@@ -145,7 +271,9 @@ def run_agentic_rag(pipeline_run_id: str, classified: dict[str, Any]) -> dict[st
             )
             if tc_resp.status_code < 400:
                 tc = tc_resp.json()
-                candidate["ticketCandidateId"] = tc.get("ticket_candidate_id", candidate["ticketCandidateId"])
+                candidate["ticketCandidateId"] = tc.get(
+                    "ticket_candidate_id", candidate["ticketCandidateId"]
+                )
 
             dispatch = client.post(
                 f"{cp}/v1/jira/dispatch",
@@ -159,7 +287,9 @@ def run_agentic_rag(pipeline_run_id: str, classified: dict[str, Any]) -> dict[st
                     "issue_type": candidate.get("issueType"),
                 },
             )
-            jira_result = dispatch.json() if dispatch.status_code < 500 else {"error": dispatch.text}
+            jira_result = (
+                dispatch.json() if dispatch.status_code < 500 else {"error": dispatch.text}
+            )
 
         report_stage(
             pipeline_run_id,
@@ -169,7 +299,6 @@ def run_agentic_rag(pipeline_run_id: str, classified: dict[str, Any]) -> dict[st
             parent_artifact_ids=[classified.get("classifiedId", "")],
             metrics={"ticket_candidates": 1},
         )
-        # Mark JIRA stage based on tool result
         jira_status = (jira_result.get("jira_tool") or jira_result).get("status", "")
         if jira_status in ("JIRA_CREATED", "EXISTING_TICKET", "EXISTING_TICKET_UPDATED"):
             report_stage(
@@ -189,8 +318,6 @@ def run_agentic_rag(pipeline_run_id: str, classified: dict[str, Any]) -> dict[st
 
 
 if __name__ == "__main__":
-    import json
-
     cls = {
         "classifiedId": "cls-demo",
         "parentFeatureId": "feat-demo",
@@ -201,8 +328,12 @@ if __name__ == "__main__":
         "reviewRequired": False,
         "cleanedText": "App crashes every time I try to checkout on Android",
         "product": "Checkout",
-        "anomaly": {"isAnomaly": True, "anomalyScore": 0.91, "anomalyType": "volume_spike",
-                     "supportingEvidence": "38 similar in 1h"},
+        "anomaly": {
+            "isAnomaly": True,
+            "anomalyScore": 0.91,
+            "anomalyType": "volume_spike",
+            "supportingEvidence": "38 similar in 1h",
+        },
         "cluster": {"clusterId": "clu-checkout-crash"},
         "classifiedAt": "2026-09-18T10:18:40Z",
     }
