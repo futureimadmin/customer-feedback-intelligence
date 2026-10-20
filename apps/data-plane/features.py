@@ -51,7 +51,6 @@ def _stub_embedding(text: str, dim: int = 64) -> list[float]:
     for i in range(dim):
         b = h[i % len(h)]
         vals.append((b / 255.0) * 2 - 1)
-    # L2 normalize
     norm = math.sqrt(sum(v * v for v in vals)) or 1.0
     return [v / norm for v in vals]
 
@@ -69,58 +68,37 @@ def embed_text(text: str, model_name: str) -> tuple[list[float], str]:
         emb = model.get_embeddings([text])[0].values
         return list(emb), model_name
     except Exception as e:
-        logger.info("Vertex embedding unavailable (%s); using stub", e)
-        return _stub_embedding(text), f"stub:{model_name}"
+        logger.info("Vertex embedding unavailable, using stub: %s", e)
+        return _stub_embedding(text), "stub-embedding"
 
 
-def score_anomaly(features: dict[str, Any], window_stats: dict[str, float] | None = None) -> dict[str, Any]:
-    """Model 3 — lightweight anomaly score (volume spike + negative sentiment)."""
-    window_stats = window_stats or {}
-    similar_1h = window_stats.get("similarCount1h", 0)
-    baseline = window_stats.get("baseline1h", 3.0)
-    sentiment = features.get("sentiment", {})
-    score = 0.0
-    anomaly_type = None
-    evidence = []
-
-    if baseline > 0 and similar_1h >= max(10, baseline * 5):
-        score = max(score, min(0.5 + similar_1h / (baseline * 20), 0.99))
-        anomaly_type = "volume_spike"
-        evidence.append(f"{similar_1h} similar in 1h vs baseline {baseline}")
-
-    if sentiment.get("label") == "negative" and sentiment.get("score", 0) > 0.85:
-        score = max(score, 0.7)
-        anomaly_type = anomaly_type or "sentiment_shift"
-        evidence.append(f"strong negative sentiment {sentiment.get('score')}")
-
-    return {
-        "isAnomaly": score >= float(load_pipeline_config().get("models", {}).get("anomaly_score_threshold", 0.8)),
-        "anomalyScore": round(score, 3),
-        "anomalyType": anomaly_type,
-        "supportingEvidence": "; ".join(evidence) if evidence else None,
-        "modelVersion": "anomaly-v1.4.0-rules",
-    }
-
-
-def assign_cluster(text: str, product: str | None) -> dict[str, Any]:
-    """Model 2 — coarse rule-based cluster id (replace with HDBSCAN batch job)."""
+def _anomaly_score(text: str, window_stats: dict[str, float] | None) -> dict[str, Any]:
     lower = text.lower()
-    product_key = (product or "unknown").lower().replace(" ", "-")
-    if "checkout" in lower and "crash" in lower:
-        cid = f"clu-{product_key}-crash"
-        summary = f"{product or 'App'} crash reports"
-    elif "payment" in lower or "billing" in lower:
-        cid = f"clu-{product_key}-billing"
-        summary = "Billing / payment issues"
-    else:
-        cid = f"clu-{product_key}-general"
-        summary = f"{product or 'General'} feedback cluster"
+    urgency = sum(1 for w in URGENCY_WORDS if w in lower)
+    base = min(0.3 + 0.2 * urgency, 0.95)
+    if window_stats:
+        similar = float(window_stats.get("similarCount1h") or 0)
+        baseline = float(window_stats.get("baseline1h") or 1)
+        if baseline > 0 and similar / baseline > 5:
+            base = min(base + 0.25, 0.99)
     return {
-        "clusterId": cid,
-        "distanceToCentroid": 0.1,
-        "summary": summary,
-        "modelVersion": "cluster-issue-v2.0.1-rules",
+        "isAnomaly": base >= 0.8,
+        "anomalyScore": round(base, 3),
+        "reasons": ["urgency_keywords"] if urgency else [],
     }
+
+
+def _cluster_assign(text: str, product: str | None) -> dict[str, Any]:
+    lower = text.lower()
+    if "checkout" in lower and "crash" in lower:
+        cid = "clu-checkout-crash"
+    elif "payment" in lower or "billing" in lower:
+        cid = "clu-payments"
+    elif "login" in lower or "auth" in lower:
+        cid = "clu-auth"
+    else:
+        cid = f"clu-{hashlib.md5((product or 'gen').encode()).hexdigest()[:8]}"
+    return {"clusterId": cid, "method": "rule-v1"}
 
 
 def build_feature_artifact(
@@ -128,34 +106,21 @@ def build_feature_artifact(
     window_stats: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     cfg = load_pipeline_config()
-    text = normalized.get("cleanedText") or ""
+    text = normalized.get("cleanedText") or normalized.get("text") or ""
     model_name = cfg.get("models", {}).get("embedding_model", "text-embedding-004")
-
-    sentiment = _simple_sentiment(text)
-    intent = _simple_intent(text)
-    urgency = [w for w in URGENCY_WORDS if w in text.lower()]
-    embedding, emb_model = embed_text(text, model_name)
-
-    feat_body = {
-        "sentiment": sentiment,
-        "intent": intent,
-        "entities": [w for w in ("checkout", "Android", "payment", "login") if w.lower() in text.lower()],
-        "urgencyKeywords": urgency,
-        "language": normalized.get("language", "en"),
-    }
-    anomaly = score_anomaly(feat_body, window_stats)
-    cluster = assign_cluster(text, normalized.get("product"))
-
+    emb, emb_model = embed_text(text, model_name)
     return {
         "artifactId": f"feat-{short_id()}",
         "parentNormalizedId": normalized.get("artifactId"),
-        "pipelineVersion": cfg.get("pipeline_version", "1.0.0"),
+        "embedding": emb,
         "embeddingModel": emb_model,
-        "embeddingDim": len(embedding),
-        "embedding": embedding,
-        "features": feat_body,
-        "anomaly": anomaly,
-        "cluster": cluster,
+        "features": {
+            "sentiment": _simple_sentiment(text),
+            "intent": _simple_intent(text),
+            "tokenCount": len(text.split()),
+        },
+        "anomaly": _anomaly_score(text, window_stats),
+        "cluster": _cluster_assign(text, normalized.get("product")),
         "product": normalized.get("product"),
         "channel": normalized.get("channel"),
         "cleanedText": text,
@@ -169,28 +134,44 @@ def run_features(
     window_stats: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     cfg = load_pipeline_config()
-    bucket = gcs_bucket_name(cfg)
+    bucket = gcs_bucket_name()
     prefix = cfg.get("gcs", {}).get("prefixes", {}).get("features", "curated/features/")
 
     report_stage(pipeline_run_id, "FEATURES", "RUNNING")
     try:
         artifact = build_feature_artifact(normalized, window_stats)
         path = f"{prefix}{artifact['artifactId']}.json"
-        # Store embedding-heavy object; in prod split vector to Vector Search upsert
         uri = gcs_upload_json(bucket, path, artifact)
+        # Phase 3: stream embedding into Vertex Vector Search (non-fatal)
+        try:
+            from vector_upsert import upsert_feature_embedding
+
+            upsert_result = upsert_feature_embedding(artifact)
+            artifact["vectorUpsert"] = upsert_result
+            if upsert_result.get("status") == "upserted":
+                logger.info("vector upsert ok %s", upsert_result.get("datapoint_id"))
+        except Exception as ve:
+            logger.warning("vector upsert skipped: %s", ve)
+            artifact["vectorUpsert"] = {"status": "error", "error": str(ve)}
+
         report_stage(
             pipeline_run_id,
             "FEATURES",
             "COMPLETED",
             artifact_ids=[artifact["artifactId"]],
             parent_artifact_ids=[normalized.get("artifactId", "")],
-            metrics={"features": 1},
+            metrics={
+                "features": 1,
+                "vector_upserted": 1 if artifact.get("vectorUpsert", {}).get("status") == "upserted" else 0,
+            },
         )
-        logger.info("features %s anomaly=%s cluster=%s -> %s",
-                    artifact["artifactId"],
-                    artifact["anomaly"].get("isAnomaly"),
-                    artifact["cluster"].get("clusterId"),
-                    uri)
+        logger.info(
+            "features %s anomaly=%s cluster=%s -> %s",
+            artifact["artifactId"],
+            artifact["anomaly"].get("isAnomaly"),
+            artifact["cluster"].get("clusterId"),
+            uri,
+        )
         return artifact
     except Exception as e:
         report_stage(pipeline_run_id, "FEATURES", "FAILED", error=str(e))
