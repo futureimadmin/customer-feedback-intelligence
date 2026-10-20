@@ -70,57 +70,53 @@ def vertex_classify(text: str, features: dict[str, Any]) -> dict[str, Any] | Non
         )
         ep = aiplatform.Endpoint(endpoint)
         prediction = ep.predict(instances=[{"text": text, "features": features}])
-        # Expect custom response shape from trained model
-        pred = prediction.predictions[0]
+        preds = prediction.predictions[0] if prediction.predictions else {}
         return {
-            "businessUnit": pred.get("businessUnit"),
-            "category": pred.get("category"),
-            "subCategory": pred.get("subCategory"),
-            "suggestedSeverity": pred.get("suggestedSeverity", "Medium"),
-            "confidence": float(pred.get("confidence", 0.5)),
-            "modelVersion": pred.get("modelVersion", "classifier-bu-endpoint"),
-            "probabilities": pred.get("probabilities", {}),
+            "businessUnit": preds.get("businessUnit") or preds.get("label"),
+            "category": preds.get("category"),
+            "subCategory": preds.get("subCategory"),
+            "suggestedSeverity": preds.get("severity", "Medium"),
+            "confidence": float(preds.get("confidence", 0.5)),
+            "modelVersion": preds.get("modelVersion", "classifier-vertex"),
+            "probabilities": preds.get("probabilities") or {},
         }
     except Exception as e:
-        logger.warning("Vertex classifier failed: %s", e)
+        logger.warning("vertex classify failed: %s", e)
         return None
 
 
 def run_classify(pipeline_run_id: str, feature_artifact: dict[str, Any]) -> dict[str, Any]:
     cfg = load_pipeline_config()
-    bucket = gcs_bucket_name(cfg)
-    prefix = cfg.get("gcs", {}).get("prefixes", {}).get("classified", "curated/classified/")
     threshold = float(cfg.get("classification", {}).get("confidence_threshold", 0.75))
+    text = feature_artifact.get("cleanedText") or feature_artifact.get("text") or ""
+    product = feature_artifact.get("product")
 
-    report_stage(pipeline_run_id, "CLASSIFY", "RUNNING")
     try:
-        text = feature_artifact.get("cleanedText") or ""
-        features = feature_artifact.get("features") or {}
-        result = vertex_classify(text, features) or rule_classify(text, feature_artifact.get("product"))
-
-        confidence = float(result["confidence"])
+        result = vertex_classify(text, feature_artifact.get("features") or {}) or rule_classify(text, product)
+        confidence = float(result.get("confidence") or 0)
         review_required = confidence < threshold
 
         record = {
             "classifiedId": f"cls-{short_id()}",
+            "artifactId": f"cls-{short_id()}",
             "parentFeatureId": feature_artifact.get("artifactId"),
-            "businessUnit": result["businessUnit"],
-            "category": result["category"],
+            "pipelineRunId": pipeline_run_id,
+            "businessUnit": result.get("businessUnit"),
+            "category": result.get("category"),
             "subCategory": result.get("subCategory"),
             "suggestedSeverity": result.get("suggestedSeverity"),
             "confidence": confidence,
-            "modelVersion": result["modelVersion"],
-            "probabilities": result.get("probabilities", {}),
-            "classifiedAt": utcnow(),
-            "pipelineVersion": cfg.get("pipeline_version", "1.0.0"),
             "reviewRequired": review_required,
-            "anomaly": feature_artifact.get("anomaly"),
-            "cluster": feature_artifact.get("cluster"),
+            "modelVersion": result.get("modelVersion"),
+            "probabilities": result.get("probabilities") or {},
             "product": feature_artifact.get("product"),
             "channel": feature_artifact.get("channel"),
             "cleanedText": text,
+            "createdAt": utcnow(),
         }
 
+        bucket = gcs_bucket_name()
+        prefix = cfg.get("gcs", {}).get("prefixes", {}).get("classified", "curated/classified/")
         path = f"{prefix}{record['classifiedId']}.json"
         uri = gcs_upload_json(bucket, path, record)
 
@@ -140,10 +136,36 @@ def run_classify(pipeline_run_id: str, feature_artifact: dict[str, Any]) -> dict
             review_required,
             uri,
         )
+        enqueue_human_review(pipeline_run_id, record)
         return record
     except Exception as e:
         report_stage(pipeline_run_id, "CLASSIFY", "FAILED", error=str(e))
         raise
+
+
+def enqueue_human_review(pipeline_run_id: str, classified: dict[str, Any]) -> None:
+    """Push low-confidence classification to Control Plane review queue."""
+    if not classified.get("reviewRequired"):
+        return
+    try:
+        import httpx
+        from common import control_plane_url
+
+        with httpx.Client(timeout=15.0) as client:
+            client.post(
+                f"{control_plane_url()}/v1/review-queue",
+                json={
+                    "classified_id": classified.get("classifiedId") or classified.get("artifactId"),
+                    "pipeline_run_id": pipeline_run_id,
+                    "text": classified.get("cleanedText") or "",
+                    "business_unit": classified.get("businessUnit"),
+                    "category": classified.get("category"),
+                    "confidence": classified.get("confidence"),
+                    "reason": "Below confidence threshold",
+                },
+            )
+    except Exception as e:
+        logger.warning("enqueue review failed: %s", e)
 
 
 if __name__ == "__main__":
