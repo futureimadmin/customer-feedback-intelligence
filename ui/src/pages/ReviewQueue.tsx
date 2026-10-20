@@ -61,6 +61,7 @@ export default function ReviewQueue() {
       });
       await load();
     } catch {
+      /* offline */
       setItems((prev) => prev.filter((x) => x.review_id !== id));
     } finally {
       setBusy(null);
