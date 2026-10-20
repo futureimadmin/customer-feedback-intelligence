@@ -30,6 +30,7 @@ resource "google_vertex_ai_index" "feedback" {
   index_update_method = "STREAM_UPDATE"
 
   lifecycle {
+    # Index builds are slow; ignore display-only drift after first apply
     ignore_changes = [metadata]
   }
 }
@@ -42,9 +43,11 @@ resource "google_vertex_ai_index_endpoint" "feedback" {
   description  = "Endpoint for CFI feedback vector similarity search"
   labels       = local.labels
 
+  # Public endpoint for simplicity; lock down with VPC-SC in production if required
   public_endpoint_enabled = true
 }
 
+# Deploy index to endpoint (creates deployed_index_id used by find_neighbors)
 resource "google_vertex_ai_index_endpoint_deployed_index" "feedback" {
   count = var.enable_vector_search ? 1 : 0
 
@@ -67,6 +70,7 @@ resource "google_vertex_ai_index_endpoint_deployed_index" "feedback" {
   ]
 }
 
+# Ensure data plane can manage indexes / call prediction
 resource "google_project_iam_member" "data_plane_aiplatform_admin_light" {
   count   = var.enable_vector_search ? 1 : 0
   project = var.project_id
