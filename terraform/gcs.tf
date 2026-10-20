@@ -41,3 +41,10 @@ output "data_lake_bucket" {
 output "data_lake_url" {
   value = "gs://${google_storage_bucket.data_lake.name}"
 }
+
+# Placeholder for Vector Search index initial URI (empty folder marker)
+resource "google_storage_bucket_object" "vector_index_init_marker" {
+  name    = "training/vector-index-init/.keep"
+  bucket  = google_storage_bucket.data_lake.name
+  content = "placeholder for Vertex Matching Engine contents_delta_uri"
+}
