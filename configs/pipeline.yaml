@@ -28,24 +28,20 @@ pipeline:
     gemini_model: gemini-2.0-flash-001
 
   bigquery:
-    dataset: feedback_analytics
-    tables:
-      events: feedback_events
-      tickets: ticket_lineage
+    dataset: feedback_intelligence
+    classified_table: feedback_classified
+    outcomes_table: ticket_outcomes
 
   sla:
-    stage_timeout_minutes: 30
-    run_timeout_hours: 6
-    heartbeat_interval_seconds: 60
+    max_failure_rate: 0.25
+    max_dlq_open: 50
+    target_e2e_minutes: 30
 
   cost:
-    daily_budget_usd: 50.0
-    alert_threshold_pct: 80
-    track_gemini: true
-    track_vector_search: true
-    track_training: true
+    daily_budget_usd: 100.0
+    gemini_unit_cost_usd: 0.00015
+    embedding_unit_cost_usd: 0.00001
 
   training:
-    enabled: true
-    max_samples: 5000
-    promote_min_accuracy: 0.82
+    max_dataset_samples: 5000
+    auto_register_candidates: true
