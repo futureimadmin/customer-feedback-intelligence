@@ -111,6 +111,7 @@ def dispatch_runnable_stages(run) -> list[str]:
     return [s.value for s in stages]
 
 @app.get("/healthz")
+@app.get("/v1/health")
 def healthz():
     return {
         "status": "ok",
