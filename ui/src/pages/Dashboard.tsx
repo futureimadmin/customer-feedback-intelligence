@@ -27,7 +27,7 @@ export default function Dashboard() {
         <h3>Pipeline path</h3>
         <p style={{ margin: "0.5rem 0 0", fontSize: "0.9rem", color: "#475569" }}>
           Source → GCS raw/ → normalize → features + embeddings → classify (3
-          models) → BigQuery analytics branch · Agentic RAG → Cortex/Gemini →
+          models) → BigQuery analytics branch · Agentic RAG → Gemini (ADC) →
           JiraTool → Jira
         </p>
       </div>
