@@ -16,9 +16,10 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       try {
-        const [sum, sla] = await Promise.all([
+        const [sum, sla, cost] = await Promise.all([
           fetch(`${apiBase()}/v1/metrics/summary`).then((r) => (r.ok ? r.json() : null)),
           fetch(`${apiBase()}/v1/sla`).then((r) => (r.ok ? r.json() : null)),
+          fetch(`${apiBase()}/v1/cost/summary`).then((r) => (r.ok ? r.json() : null)),
         ]);
         if (!sum) return;
         setMetrics([
@@ -30,10 +31,13 @@ export default function Dashboard() {
             value:
               sum.success_rate != null ? `${Math.round(sum.success_rate * 100)}%` : "—",
           },
-          { label: "DLQ open", value: String(sum.dlq_open ?? "—") },
           {
             label: "SLA",
             value: sla?.healthy === false ? "BREACH" : sla?.healthy ? "OK" : "—",
+          },
+          {
+            label: "Cost (USD)",
+            value: cost?.total_usd != null ? `$${cost.total_usd}` : "—",
           },
         ]);
       } catch {

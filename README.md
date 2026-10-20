@@ -5,7 +5,8 @@ AI-powered platform that turns multichannel customer feedback and application lo
 **GitHub:** https://github.com/futureimadmin/customer-feedback-intelligence  
 **GCP Project:** `intelligent-machines`  
 **Primary region:** `us-central1`  
-**Data lake bucket:** `customer-feedback`
+**Data lake bucket:** `customer-feedback`  
+**Release:** **1.3.0** — [CHANGELOG](CHANGELOG.md) · [Phase 3](docs/PHASE3.md)
 
 ## Architecture (summary)
 
@@ -19,83 +20,22 @@ AI-powered platform that turns multichannel customer feedback and application lo
 
 Kafka is **not** used on the Jira creation path. Idempotency is enforced at source fingerprint, pipeline checkpoints, `ticketDeduplicationKey`, Ticket Registry, and JiraTool.
 
-### Three task models
-1. **Business-Unit & Category Classifier**
-2. **Clustering / Issue-Grouping**
-3. **Anomaly Detection**
+## Release highlights (1.3.0)
 
-## Repository layout
-
-```
-├── terraform/           # GCP infrastructure (GCS, GKE, BQ, IAM, secrets)
-├── apps/
-│   ├── control-plane/   # Orchestrator, heartbeat, state API
-│   ├── data-plane/      # Ingest, normalize, features, classify workers
-│   └── jira-tool/       # Controlled Jira create/update service
-├── ui/                  # React admin & review console
-├── configs/             # Jira, pipeline, taxonomy (non-secret defaults)
-├── docs/                # Architecture notes
-└── scripts/             # Bootstrap helpers
-```
-
-## Prerequisites
-
-- GCP project `intelligent-machines` with billing enabled
-- `gcloud` CLI authenticated; Terraform ≥ 1.5
-- Node.js 20+ (UI)
-- Jira Cloud API token (stored in Secret Manager — never commit)
+- Gemini via Vertex **ADC** (no Cortex)
+- Real **JiraTool** REST + dry-run
+- **Vector Search** Terraform + embedding upsert
+- **Training** registry + optional CustomJob
+- **Review workbench** API + UI
+- **SLA** + **cost** summary endpoints
 
 ## Quick start
 
-### 1. Infrastructure
-
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit if needed (project_id, jira placeholders)
-terraform init
-terraform plan
-terraform apply
-```
-
-Creates GCS bucket `customer-feedback` with folder prefixes (`raw/`, `curated/`, …), GKE, BigQuery, IAM, Secret Manager placeholders.
-
-### 2. Jira secrets
-
-```bash
-gcloud secrets versions add jira-base-url --data-file=- <<< "https://your-domain.atlassian.net"
-gcloud secrets versions add jira-email --data-file=- <<< "automation@example.com"
-gcloud secrets versions add jira-api-token --data-file=- <<< "YOUR_API_TOKEN"
-```
-
-Non-secret defaults: `configs/jira.yaml`.
-
-### 3. UI
-
-```bash
+cd terraform && cp terraform.tfvars.example terraform.tfvars && terraform apply
+# secrets: jira-base-url, jira-email, jira-api-token
 cd ui && cp .env.example .env.local && npm install && npm run dev
 ```
-
-## GCS layout
-
-```
-gs://customer-feedback/
-  raw/{source}/{yyyy}/{mm}/{dd}/{ingestionRunId}/
-  raw-envelope/
-  curated/normalized/
-  curated/features/
-  curated/classified/
-  quarantine/
-```
-
-## Phase 2 additions
-
-- Vertex Vector Search Terraform (`terraform/vertex_vector_search.tf`)
-- Training helpers + model registry UI (`apps/data-plane/training.py`, Models page)
-- Control Plane SLA / metrics / data-quality endpoints
-- Settings load-from-API; Dashboard & Pipeline runs live metrics
-
-See [docs/PHASE2.md](docs/PHASE2.md).
 
 ## License
 
