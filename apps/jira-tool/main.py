@@ -40,7 +40,6 @@ def load_jira_config() -> dict[str, Any]:
 
 
 def get_jira_credentials() -> tuple[str, str, str]:
-    """Resolve base URL, email, token from env (local) or mounted secret files (GKE)."""
     base = os.environ.get("JIRA_BASE_URL")
     email = os.environ.get("JIRA_EMAIL")
     token = os.environ.get("JIRA_API_TOKEN")
@@ -62,40 +61,37 @@ def get_jira_credentials() -> tuple[str, str, str]:
 
 
 class TicketCandidate(BaseModel):
-    ticket_candidate_id: str
-    deduplication_key: str
     summary: str
-    description: str
+    description: str = ""
     issue_type: str | None = None
-    priority: str | None = "Medium"
+    priority: str | None = None
     labels: list[str] = Field(default_factory=list)
-    suggested_existing_key: str | None = None
-    business_unit: str | None = None
+    components: list[str] = Field(default_factory=list)
+    deduplication_key: str | None = None
+    project_key: str | None = None
+    pipeline_run_id: str | None = None
+    classified_id: str | None = None
 
 
 class JiraToolResult(BaseModel):
-    status: str
-    jira_issue_id: str | None = None
-    jira_key: str | None = None
-    action_taken: str | None = None
-    deduplication_key: str
-    ticket_candidate_id: str | None = None
+    ok: bool
+    action: str  # created | updated | dry_run | error
+    issue_key: str | None = None
+    issue_id: str | None = None
     message: str | None = None
-
-
-_REGISTRY: dict[str, str] = {}
+    dry_run: bool = False
 
 
 def _priority_name(priority: str | None) -> str:
-    p = (priority or "Medium").strip().lower()
     mapping = {
-        "highest": "Highest",
-        "high": "High",
-        "medium": "Medium",
-        "low": "Low",
-        "lowest": "Lowest",
+        "Highest": "Highest",
+        "High": "High",
+        "Medium": "Medium",
+        "Low": "Low",
+        "Lowest": "Lowest",
+        "Critical": "Highest",
     }
-    return mapping.get(p, "Medium")
+    return mapping.get(priority or "Medium", "Medium")
 
 
 def _jira_client(base: str, email: str, token: str, timeout: float = 30.0) -> httpx.Client:
@@ -110,20 +106,16 @@ def _jira_client(base: str, email: str, token: str, timeout: float = 30.0) -> ht
 def jira_search_similar(
     client: httpx.Client, project: str, summary: str, max_results: int = 5
 ) -> list[dict[str, Any]]:
-    tokens = " ".join(summary.split()[:8]).replace('"', '\\"')
-    jql = (
-        f'project = {project} AND statusCategory != Done '
-        f'AND text ~ "{tokens}" ORDER BY updated DESC'
-    )
+    jql = f'project = {project} AND summary ~ "{summary[:50].replace(chr(34), "")}" ORDER BY updated DESC'
     try:
         r = client.get(
             "/rest/api/3/search",
-            params={"jql": jql, "maxResults": max_results, "fields": "summary,status,key"},
+            params={"jql": jql, "maxResults": max_results, "fields": "summary,key,status"},
         )
         if r.status_code >= 400:
             logger.warning("Jira search failed %s: %s", r.status_code, r.text[:300])
             return []
-        return r.json().get("issues", [])
+        return r.json().get("issues") or []
     except Exception as e:
         logger.warning("Jira search error: %s", e)
         return []
@@ -133,11 +125,9 @@ def jira_add_comment(client: httpx.Client, issue_key: str, body: str) -> bool:
     try:
         r = client.post(
             f"/rest/api/3/issue/{issue_key}/comment",
-            json={"body": {"type": "doc", "version": 1, "content": [
-                {"type": "paragraph", "content": [{"type": "text", "text": body}]}
-            ]}},
+            json={"body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": body}]}]}},
         )
-        return r.status_code < 300
+        return r.status_code < 400
     except Exception as e:
         logger.warning("Jira comment failed: %s", e)
         return False
@@ -146,29 +136,24 @@ def jira_add_comment(client: httpx.Client, issue_key: str, body: str) -> bool:
 def jira_create_issue(
     client: httpx.Client,
     project: str,
-    issue_type: str,
     summary: str,
     description: str,
+    issue_type: str,
     priority: str,
     labels: list[str],
 ) -> dict[str, Any] | None:
     payload = {
         "fields": {
             "project": {"key": project},
-            "issuetype": {"name": issue_type},
             "summary": summary[:255],
             "description": {
                 "type": "doc",
                 "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": description[:32000]}],
-                    }
-                ],
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description[:30000]}]}],
             },
+            "issuetype": {"name": issue_type},
             "priority": {"name": _priority_name(priority)},
-            "labels": [lb[:255] for lb in (labels or [])][:20],
+            "labels": labels[:20],
         }
     }
     try:
@@ -185,124 +170,81 @@ def jira_create_issue(
 @app.get("/healthz")
 @app.get("/v1/health")
 def healthz():
-    creds_ok = False
-    try:
-        get_jira_credentials()
-        creds_ok = True
-    except RuntimeError:
-        pass
-    return {"status": "ok", "jira_credentials_configured": creds_ok}
+    return {"status": "ok", "service": "jira-tool", "version": "1.1.0"}
 
 
 @app.post("/v1/tickets", response_model=JiraToolResult)
 def create_or_update(candidate: TicketCandidate):
     cfg = load_jira_config()
-    project = cfg.get("default_project_key", "MOB")
+    project = candidate.project_key or cfg.get("default_project_key", "MOB")
     issue_type = candidate.issue_type or cfg.get("default_issue_type", "Bug")
     timeout = float(cfg.get("http", {}).get("timeout_seconds", 30))
-    prefer_update = cfg.get("behaviour", {}).get("prefer_update_if_similar", True)
-    add_comment = cfg.get("behaviour", {}).get("add_comment_on_update", True)
-    max_results = int(cfg.get("search", {}).get("max_results", 10))
 
-    if candidate.deduplication_key in _REGISTRY:
-        key = _REGISTRY[candidate.deduplication_key]
-        logger.info("registry hit %s -> %s", candidate.deduplication_key, key)
-        return JiraToolResult(
-            status="EXISTING_TICKET",
-            jira_key=key,
-            action_taken="noop_registry",
-            deduplication_key=candidate.deduplication_key,
-            ticket_candidate_id=candidate.ticket_candidate_id,
-        )
-
+    # Dry-run when credentials missing
     try:
         base, email, token = get_jira_credentials()
-    except RuntimeError as e:
-        synthetic_key = f"{project}-DRY"
-        _REGISTRY[candidate.deduplication_key] = synthetic_key
+    except RuntimeError:
+        dry_key = f"DRY-{hashlib.sha256((candidate.summary or '').encode()).hexdigest()[:8].upper()}"
+        logger.info("dry-run ticket %s summary=%s", dry_key, candidate.summary[:60])
         return JiraToolResult(
-            status="JIRA_CREATED",
-            jira_key=synthetic_key,
-            action_taken="created_dry_run",
-            deduplication_key=candidate.deduplication_key,
-            ticket_candidate_id=candidate.ticket_candidate_id,
-            message=str(e),
+            ok=True,
+            action="dry_run",
+            issue_key=dry_key,
+            message="Credentials not configured — dry-run only",
+            dry_run=True,
         )
 
     with _jira_client(base, email, token, timeout=timeout) as client:
-        if candidate.suggested_existing_key and prefer_update:
-            if add_comment:
-                comment = (
-                    f"[CFI] Related feedback linked via Agentic RAG.\n"
-                    f"Candidate: {candidate.ticket_candidate_id}\n"
-                    f"Dedup key: {candidate.deduplication_key}\n\n"
-                    f"{candidate.description[:2000]}"
-                )
-                jira_add_comment(client, candidate.suggested_existing_key, comment)
-            _REGISTRY[candidate.deduplication_key] = candidate.suggested_existing_key
-            return JiraToolResult(
-                status="EXISTING_TICKET_UPDATED",
-                jira_key=candidate.suggested_existing_key,
-                action_taken="added_comment_and_link",
-                deduplication_key=candidate.deduplication_key,
-                ticket_candidate_id=candidate.ticket_candidate_id,
+        # Prefer update if similar existing issue
+        if cfg.get("behaviour", {}).get("prefer_update_if_similar", True):
+            similar = jira_search_similar(
+                client, project, candidate.summary, max_results=cfg.get("search", {}).get("max_results", 5)
             )
-
-        similar = jira_search_similar(client, project, candidate.summary, max_results=max_results)
-        if similar and prefer_update:
-            existing_key = similar[0].get("key")
-            if existing_key:
-                if add_comment:
-                    comment = (
-                        f"[CFI] Similar feedback matched by search.\n"
-                        f"Candidate: {candidate.ticket_candidate_id}\n"
-                        f"Summary: {candidate.summary}\n\n"
-                        f"{candidate.description[:1500]}"
+            if similar:
+                key = similar[0].get("key")
+                if key and cfg.get("behaviour", {}).get("add_comment_on_update", True):
+                    jira_add_comment(
+                        client,
+                        key,
+                        f"Additional feedback (dedup={candidate.deduplication_key}):\n{candidate.description[:2000]}",
                     )
-                    jira_add_comment(client, existing_key, comment)
-                _REGISTRY[candidate.deduplication_key] = existing_key
                 return JiraToolResult(
-                    status="EXISTING_TICKET_UPDATED",
-                    jira_key=existing_key,
-                    action_taken="search_match_comment",
-                    deduplication_key=candidate.deduplication_key,
-                    ticket_candidate_id=candidate.ticket_candidate_id,
-                    message=f"Matched {len(similar)} similar issue(s)",
+                    ok=True,
+                    action="updated",
+                    issue_key=key,
+                    issue_id=str(similar[0].get("id")),
+                    message="Matched existing issue; comment added",
                 )
 
         created = jira_create_issue(
             client,
             project=project,
-            issue_type=issue_type,
             summary=candidate.summary,
             description=candidate.description,
+            issue_type=issue_type,
             priority=candidate.priority or "Medium",
             labels=candidate.labels or [],
         )
         if not created:
             return JiraToolResult(
-                status="FAILED",
-                action_taken="create_failed",
-                deduplication_key=candidate.deduplication_key,
-                ticket_candidate_id=candidate.ticket_candidate_id,
+                ok=False,
+                action="error",
                 message="Jira create API returned error",
             )
 
         key = created.get("key")
-        issue_id = created.get("id")
-        _REGISTRY[candidate.deduplication_key] = key or ""
+        issue_id = str(created.get("id"))
         logger.info("created Jira issue %s id=%s", key, issue_id)
         return JiraToolResult(
-            status="JIRA_CREATED",
-            jira_key=key,
-            jira_issue_id=issue_id,
-            action_taken="created",
-            deduplication_key=candidate.deduplication_key,
-            ticket_candidate_id=candidate.ticket_candidate_id,
+            ok=True,
+            action="created",
+            issue_key=key,
+            issue_id=issue_id,
+            message="Issue created",
         )
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8081")))
