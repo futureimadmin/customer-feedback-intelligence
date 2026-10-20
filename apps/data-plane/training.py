@@ -92,73 +92,106 @@ def build_classifier_dataset(max_samples: int = 5000) -> dict[str, Any]:
     fp = hashlib.sha256(json.dumps(samples[:200], sort_keys=True).encode()).hexdigest()[:12]
     dataset_version = f"clf-ds-{fp}"
     uri = _gcs_upload_json(
-        f"training/datasets/{dataset_version}/manifest.json",
-        {
-            "dataset_version": dataset_version,
-            "task": "classification",
-            "sample_count": len(samples),
-            "created_at": utcnow(),
-            "samples_preview": samples[:20],
-        },
+        f"training/datasets/{dataset_version}.json",
+        {"dataset_version": dataset_version, "samples": samples, "count": len(samples)},
     )
-    logger.info("dataset %s samples=%d uri=%s", dataset_version, len(samples), uri)
+    dist = Counter(s.get("businessUnit") or "unknown" for s in samples)
     return {
         "dataset_version": dataset_version,
-        "sample_count": len(samples),
         "uri": uri,
+        "count": len(samples),
+        "label_distribution": dict(dist),
         "samples": samples,
     }
 
 
 def evaluate_rule_baseline(samples: list[dict[str, Any]]) -> dict[str, float]:
-    from classify import rule_classify
-
     if not samples:
-        return {"accuracy": 0.0, "n": 0.0}
-
+        return {"accuracy": 0.0, "support": 0}
     correct = 0
     for s in samples:
-        pred = rule_classify(s["text"], None)
-        if pred.get("businessUnit") == s.get("businessUnit"):
+        text = (s.get("text") or "").lower()
+        pred = "General Support"
+        if "crash" in text:
+            pred = "Mobile Engineering"
+        elif "payment" in text or "bill" in text:
+            pred = "Payments"
+        elif "login" in text or "auth" in text:
+            pred = "Identity"
+        if pred == (s.get("businessUnit") or ""):
             correct += 1
-    n = len(samples)
-    return {
-        "accuracy": round(correct / n, 4) if n else 0.0,
-        "n": float(n),
-        "support": float(n),
-    }
+    acc = correct / max(len(samples), 1)
+    return {"accuracy": round(acc, 4), "support": len(samples)}
 
 
-def train_classifier_candidate(
-    dataset: dict[str, Any] | None = None,
-    model_id: str = "classifier-bu",
+def submit_vertex_custom_job(
+    model_id: str,
+    version: str,
+    dataset_uri: str | None,
+    image_uri: str,
 ) -> dict[str, Any]:
-    dataset = dataset or build_classifier_dataset()
-    samples = dataset.get("samples") or []
-    metrics = evaluate_rule_baseline(samples)
-    version = f"v{utcnow()[:10].replace('-', '')}-{short_id()[:6]}"
+    project = os.environ.get("GCP_PROJECT", "intelligent-machines")
+    location = os.environ.get("GCP_REGION", "us-central1")
+    try:
+        from google.cloud import aiplatform
 
-    dist = Counter(s.get("businessUnit") or "unknown" for s in samples)
+        aiplatform.init(project=project, location=location)
+        job = aiplatform.CustomJob(
+            display_name=f"{model_id}-{version}",
+            worker_pool_specs=[
+                {
+                    "machine_spec": {"machine_type": "n1-standard-4"},
+                    "replica_count": 1,
+                    "container_spec": {
+                        "image_uri": image_uri,
+                        "args": [
+                            "--dataset", dataset_uri or "",
+                            "--model-id", model_id,
+                            "--version", version,
+                        ],
+                    },
+                }
+            ],
+        )
+        job.submit()
+        return {"status": "submitted", "resource_name": job.resource_name}
+    except Exception as e:
+        logger.warning("CustomJob submit failed: %s", e)
+        return {"status": "error", "error": str(e)}
+
+
+def train_classifier_candidate() -> dict[str, Any]:
+    cfg = load_pipeline_config()
+    max_samples = int(cfg.get("training", {}).get("max_dataset_samples", 5000))
+    dataset = build_classifier_dataset(max_samples=max_samples)
+    metrics = evaluate_rule_baseline(dataset.get("samples") or [])
+    model_id = "classifier-bu"
+    version = f"v{short_id()[:8]}"
+    dist = dataset.get("label_distribution") or {}
+
     artifact = {
         "model_id": model_id,
         "version": version,
         "task": "classification",
-        "algorithm": "rules+optional-vertex-endpoint",
-        "dataset_version": dataset.get("dataset_version"),
         "metrics": metrics,
-        "label_distribution": dict(dist),
+        "dataset_version": dataset.get("dataset_version"),
+        "dataset_uri": dataset.get("uri"),
+        "label_distribution": dist,
         "created_at": utcnow(),
     }
     uri = _gcs_upload_json(f"models/{model_id}/{version}/metadata.json", artifact)
 
     vertex_image = os.environ.get("VERTEX_TRAINING_IMAGE")
     if vertex_image:
-        logger.info(
-            "VERTEX_TRAINING_IMAGE set (%s) — submit CustomJob externally; "
-            "registering candidate metadata only",
-            vertex_image,
+        job_meta = submit_vertex_custom_job(
+            model_id=model_id,
+            version=version,
+            dataset_uri=dataset.get("uri"),
+            image_uri=vertex_image,
         )
         artifact["vertex_training_image"] = vertex_image
+        artifact["vertex_custom_job"] = job_meta
+        logger.info("CustomJob result: %s", job_meta.get("status"))
 
     registered = register_with_control_plane(
         model_id=model_id,
