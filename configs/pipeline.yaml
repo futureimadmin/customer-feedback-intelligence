@@ -1,6 +1,6 @@
 pipeline:
   schema_version: "1.0"
-  pipeline_version: "1.2.0"
+  pipeline_version: "1.3.0"
 
   gcs:
     bucket: customer-feedback
@@ -36,6 +36,11 @@ pipeline:
     max_failure_rate: 0.25
     max_dlq_open: 50
     target_e2e_minutes: 30
+
+  cost:
+    daily_budget_usd: 100.0
+    gemini_unit_cost_usd: 0.00015
+    embedding_unit_cost_usd: 0.00001
 
   training:
     max_dataset_samples: 5000
