@@ -1,6 +1,6 @@
 pipeline:
   schema_version: "1.0"
-  pipeline_version: "1.1.0"
+  pipeline_version: "1.2.0"
 
   gcs:
     bucket: customer-feedback
@@ -25,10 +25,18 @@ pipeline:
   agentic_rag:
     vector_search_top_k: 8
     prompt_version: ticket-intel-v4.2
-    # Gemini via Vertex AI + Application Default Credentials (no Cortex)
     gemini_model: gemini-2.0-flash-001
 
   bigquery:
     dataset: feedback_intelligence
     classified_table: feedback_classified
     outcomes_table: ticket_outcomes
+
+  sla:
+    max_failure_rate: 0.25
+    max_dlq_open: 50
+    target_e2e_minutes: 30
+
+  training:
+    max_dataset_samples: 5000
+    auto_register_candidates: true
